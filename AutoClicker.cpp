@@ -1,5 +1,7 @@
 /*
-    This is an auto clicker program designed to record the user's movements then stop recording.
+    This is an auto clicker program designed to record the user's mouse and keyboard actions then play it back.
+    Each new event will be stored in an enumerable struct. The user will select the Sleep duration between each played back
+    keystroke and mouse click.
 
     Keybind to stop recording: CTRL + ALT + Q
     
@@ -18,48 +20,48 @@
 #include <vector>
 
 
-/// Structures
-struct ClickedCoordinates {
-    int x;
-    int y;
+// Define a structure for storing either a mouse click or a keyboard event
+struct Event {
+    enum EventType { MouseClick, KeyPress } type;
+    union {
+        struct { int x, y; } mouseClick;
+        struct { DWORD vkCode; bool isKeyDown; } keyPress;
+    };
 };
 
-struct KeyEvent {
-    DWORD vkCode; 
-    bool isKeyDown;
-};
-
-
-/// Function Definitions
+/// Function Declarations
 LRESULT CALLBACK LowLevelMouseProc(int, WPARAM, LPARAM);
 LRESULT CALLBACK LowLevelKeyboardProc(int, WPARAM, LPARAM);
 
-void stall_Program(int time);
 void SetCapsLock(BOOL state);
-void send_Key(char key, double duration);
-void playback_recording();
-
+void playback_recording(u_int&, u_int&);
+void reset_keyboard_state();
+void reset_mouse_state();
+void display_banner();
+u_int welcome_message();
+void user_time_tuning(u_int&, u_int&);
 
 /// Global variables
-
 // Hook handles
 HHOOK mouse_hook;
 HHOOK keyboard_hook;
 
 bool stop_message_loop = false;   // Flag to stop recording and listening for events
-std::vector<ClickedCoordinates> coordinate_list;
-std::vector<KeyEvent> key_events;
+std::vector<Event> events;
+
 
 int main() {
-    
-    ClickedCoordinates coord;   
- 
+
+    display_banner();
+    u_int iterations = welcome_message();                                                                                                         
+                                                                                                        
+    /// Set hooks
     // Set the mouse hook
     mouse_hook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, nullptr, 0);
     if (mouse_hook == nullptr) {
         std::cerr << "Failed to set mouse hook" << std::endl;
         return 1;
-    }   
+    }  
     
     // Set the keyboard hook
     keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, nullptr, 0);
@@ -68,9 +70,11 @@ int main() {
         return 1;
     }
 
-    std::cout << "Listening for mouse clicks and key presses..." << std::endl;
+    Sleep(100);
 
-    // Read messages from the Hook until no longer recieving a signal 
+    std::cout << "\n Listening for mouse clicks and key presses..." << std::endl;
+
+    // Read messages from the Hook until no longer recieving a signal or the user cancles recording
     MSG msg;
     while (!stop_message_loop) {
         // Use PeekMessage instead of GetMessage because GetMessage is blocking and PeekMessage is not
@@ -86,33 +90,45 @@ int main() {
     UnhookWindowsHookEx(keyboard_hook);
 
     std::cout << "Completed recording.\n";
+    
+    
+    u_int time_between_clicks = 1000;
+    u_int time_between_keystroke = 500;
+    user_time_tuning(time_between_clicks, time_between_keystroke);
 
+    std::cout << "\nPlaying back";
 
     // Perform recorded operations for given number of iterations
-    playback_recording();
-
-    stall_Program(5);
+    for(u_int i = 0; i < iterations; i++) {
+        playback_recording(time_between_clicks, time_between_keystroke);
+        reset_keyboard_state();
+        reset_mouse_state();
+        std::cout << ".";
+    }
 
     return EXIT_SUCCESS;
 } // end main
 
 
+/// Function Definitions --------------------------------------------------
+
 /// LowLevelMouseProc function Description:
 /// Mouse hook callback function
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0) {
-        MSLLHOOKSTRUCT *mouseStruct = (MSLLHOOKSTRUCT *)lParam;
+        MSLLHOOKSTRUCT* mouseStruct = (MSLLHOOKSTRUCT*)lParam;
         if (mouseStruct != nullptr) {
             // Check for left mouse button down event
             if (wParam == WM_LBUTTONDOWN) {
                 int x = mouseStruct->pt.x;
                 int y = mouseStruct->pt.y;
 
-                // Create a Coordinate struct and push it into the vector
-                ClickedCoordinates coord;
-                coord.x = x;
-                coord.y = y;
-                coordinate_list.push_back(coord);
+                // Create an Event struct and push it into the vector
+                Event event;
+                event.type = Event::MouseClick;
+                event.mouseClick.x = x;
+                event.mouseClick.y = y;
+                events.push_back(event);
 
                 // Print the coordinates of the click
                 std::cout << "Mouse clicked at (" << x << ", " << y << ")" << std::endl;
@@ -125,8 +141,9 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
 } // end LowLevelMouseProc
 
 
+
 /// LowLevelKeyboardProc function Description:
-///
+/// Keyboard hook callback function
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0) {
         KBDLLHOOKSTRUCT* kbStruct = (KBDLLHOOKSTRUCT*)lParam;
@@ -139,64 +156,73 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 return CallNextHookEx(keyboard_hook, nCode, wParam, lParam);
             }
 
-            // Create a KeyEvent struct and push it into the vector
-            KeyEvent keyEvent;
-            keyEvent.vkCode = kbStruct->vkCode;
-            keyEvent.isKeyDown = isKeyDown;
-            key_events.push_back(keyEvent);
-            std::cout << stop_message_loop << std::endl;
+            // Create an Event struct and push it into the vector
+            Event event;
+            event.type = Event::KeyPress;
+            event.keyPress.vkCode = kbStruct->vkCode;
+            event.keyPress.isKeyDown = isKeyDown;
+            events.push_back(event);
+
             // Print the key event
-            std::cout << "Key " << (keyEvent.isKeyDown ? "pressed" : "released") << ": " << keyEvent.vkCode << std::endl;
+            std::cout << "Key " << (isKeyDown ? "pressed" : "released") << ": " << kbStruct->vkCode << std::endl;
         }
     }
 
     // Call the next hook in the chain
     return CallNextHookEx(keyboard_hook, nCode, wParam, lParam);
-}
-// end LowLevelKeyboardProc
+} // end LowLevelKeyboardProc
 
-/// @brief 
-void playback_recording() {
-    
-    // Print coordinates stored in the vector
-    std::cout << "Stored Coordinates:" << std::endl;
-    for (const auto& coord : coordinate_list) {
-        std::cout << "(" << coord.x << ", " << coord.y << ")" << std::endl;
+
+/// playback_recording function Description:
+/// Enumerate over the events and replay each mouse and keyboard event in the order they were recorded.
+void playback_recording(u_int &time_between_clicks, u_int &time_between_keystrokes) {
+
+    for (const auto& event : events) {
+        if (event.type == Event::MouseClick) {
+
+            SetCursorPos(event.mouseClick.x, event.mouseClick.y);
+            //std::cout << "Moved mouse to (" << event.mouseClick.x << ", " << event.mouseClick.y << ")" << std::endl;
+            // Simulate a left mouse button click
+            mouse_event(MOUSEEVENTF_LEFTDOWN, event.mouseClick.x, event.mouseClick.y, 0, 0);
+            mouse_event(MOUSEEVENTF_LEFTUP, event.mouseClick.x, event.mouseClick.y, 0, 0);
+            Sleep(time_between_clicks);
+        } else if (event.type == Event::KeyPress) {
+
+            // Simulate key press and release
+            INPUT input = {0};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = event.keyPress.vkCode;
+            input.ki.dwFlags = event.keyPress.isKeyDown ? 0 : KEYEVENTF_KEYUP;
+            SendInput(1, &input, sizeof(INPUT));
+            //std::cout << "Key " << (event.keyPress.isKeyDown ? "pressed" : "released") << ": " << event.keyPress.vkCode << std::endl;
+            Sleep(time_between_keystrokes);
+        }
     }
-    
-    // Print all stored key events
-    std::cout << "Stored Key Events:" << std::endl;
-    for (const auto& keyEvent : key_events) {
-        std::cout << "Key " << (keyEvent.isKeyDown ? "pressed" : "released") << ": " << keyEvent.vkCode << std::endl;
-    }
-
-
-
 } // end playback_recording
 
-/// Take the key to be pressed from convert_Note function and send the key to the focused program
-void send_Key(char key, double duration) {
-    // Set up the input event for a key press
-    INPUT input = {};
-    input.type = INPUT_KEYBOARD;
 
+/// reset_keyboard_state function Description:
+/// Reset the keyboard state by releasing all keys
+void reset_keyboard_state() {
+    for (int i = 0; i < 256; i++) {
+        if (GetAsyncKeyState(i) & 0x8000) {
+            INPUT input = {0};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = i;
+            input.ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(1, &input, sizeof(INPUT));
+        }
+    }
+} // end resetKeyboardState
 
-    input.ki.wVk = key;     // virtual-key code for the key needed
-    input.ki.dwFlags = 0;   // key press
-
-    // Send the key press event
-    SendInput(1, &input, sizeof(INPUT));
-
-    // Note duration
-    Sleep(duration);
-
-    // Set up the input event for the "s" key release
-    input.ki.dwFlags = KEYEVENTF_KEYUP; // key release
-
-    // Send the key release event
-    SendInput(1, &input, sizeof(INPUT));
-} // end of send_Key
-
+/// reset_mouse_state function Description:
+/// Reset the mouse state by lifting all of the buttons
+void reset_mouse_state() {
+    // Simulate mouse button release for left, right, and middle buttons
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
+    mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
+}
 
 /// SetCapsLock function Description:
 /// Toggle the caps lock on the computer. This is to enable key capture within Waveform
@@ -222,17 +248,127 @@ void SetCapsLock(BOOL state) {
     }
 } // end SetCapsLock
 
-// stall_Program Description: 
-// Have the program wait [time](s) until the program beings running in Waveform
-void stall_Program(int time){
-    std::cout << "Hey there!~\n";
-    std::cout << "Starting Count down...\n";
 
-    for(int i = time; i > 0; i--){
-        std::cout << "T-" << i << std::endl;
-        Sleep(1000); // 1 second
+void display_banner() {
+    std::cout << R"( 
+     _____ ______   ________  ___  ___  ________      ___    ___ ________     ___    ___ ________  ________
+    |\   _ \  _   \|\   __  \|\  \|\  \|\_____  \    |\  \  /  /|\   __  \   |\  \  /  /|\   __  \|\   __  \
+    \ \  \\\__\ \  \ \  \|\  \ \  \\\  \\|___/  /|   \ \  \/  / | \  \|\  \  \ \  \/  / | \  \|\  \ \  \|\  \
+     \ \  \\|__| \  \ \   __  \ \  \\\  \   /  / /    \ \    / / \ \  \\\  \  \ \    / / \ \  \\\  \ \  \\\  \
+      \ \  \    \ \  \ \  \ \  \ \  \\\  \ /  /_/__    \/  /  /   \ \  \\\  \  /     \/   \ \  \\\  \ \  \\\  \
+       \ \__\    \ \__\ \__\ \__\ \_______\\________\__/  / /      \ \_______\/  /\   \    \ \_______\ \_______\
+        \|__|     \|__|\|__|\|__|\|_______|\|_______|\___/ /        \|_______/__/ /\ __\    \|_______|\|_______|
+                                                    \|___|/                  |__|/ \|__|                                   
+                                                                                                       
+                                                                                                       
+     ___  ________   ________  ___  ___  _________        ________  _______   ________  ___       ________      ___    ___
+    |\  \|\   ___  \|\   __  \|\  \|\  \|\___   ___\     |\   __  \|\  ___ \ |\   __  \|\  \     |\   __  \    |\  \  /  /|
+    \ \  \ \  \\ \  \ \  \|\  \ \  \\\  \|___ \  \_|     \ \  \|\  \ \   __/|\ \  \|\  \ \  \    \ \  \|\  \   \ \  \/  / /
+     \ \  \ \  \\ \  \ \   ____\ \  \\\  \   \ \  \       \ \   _  _\ \  \_|/_\ \   ____\ \  \    \ \   __  \   \ \    / /
+      \ \  \ \  \\ \  \ \  \___|\ \  \\\  \   \ \  \       \ \  \\  \\ \  \_|\ \ \  \___|\ \  \____\ \  \ \  \   \/  /  /
+       \ \__\ \__\\ \__\ \__\    \ \_______\   \ \__\       \ \__\\ _\\ \_______\ \__\    \ \_______\ \__\ \__\__/  / /
+        \|__|\|__| \|__|\|__|     \|_______|    \|__|        \|__|\|__|\|_______|\|__|     \|_______|\|__|\|__|\___/ /)" << std::endl;
+}
+
+u_int welcome_message() {
+    std::cout << "Welcome to Mauzy's playback program! \n" <<
+                 "Whenever you are ready, the program will record your left mouse clicks as well as keyboard events.\n\n" <<
+                 "Press CTRL + ALT + Q at the same time to stop recording.";
+    
+    for (int i = 0; i < 4; i++) {
+        Sleep(1000);
+        std::cout << ".";
     }
-} // end stall_Program
+    std::cout << std::endl << std::endl;
+
+    // Make sure the user is entering a valid integer
+    u_int iterations = 0;
+    u_int attempts = 0;
+    u_int max_attempts = 3;
+    while (attempts < max_attempts) {
+        std::cout << "Before starting, how many times would you like to play back your movements?\n"
+                << "Please enter an integer: ";
+        std::cin >> iterations;
+        
+        if (std::cin.fail() || iterations < 1) {
+            
+            std::cin.clear(); std::cin.ignore();
+
+            attempts++;
+
+            std::cout << "Invalid input. Please enter a positive integer." << std::endl;
+            std::cout << "Attempt " << attempts << " of " << max_attempts << ".\n\n";
+        } else {
+            break;
+        }
+    }
+
+    if (attempts == max_attempts) {
+        std::cout << "Too many invalid attempts. Exiting program." << std::endl;
+        exit(EXIT_FAILURE); // Exit the program with a failure code
+    }
+
+    return iterations;
+} // end welcome_message
+
+
+void user_time_tuning(u_int &time_between_clicks, u_int &time_between_keystrokes) {
+    
+    u_int attempts = 0;
+    const u_int max_attempts = 3;
+
+    std::cout << "Great! Now that we have that recorded you should fine-tune the time between each keystroke and mouse click.\n"
+              << "You should keep in mind there can be loading time between each click. If you don't have to worry about loading time then keep the time short.\n";
+    std::cout << "\nDefaults:\n"
+              << "Time between clicks = 1000ms (1 second)\n"
+              << "Time between keystrokes = 500ms (0.5 second)\n\n";
+
+    // Get time between clicks
+    while (attempts < max_attempts) {
+        std::cout << "Please enter time between clicks in ms (example `1000`): ";
+        std::cin >> time_between_clicks;
+
+        if (std::cin.fail() || time_between_clicks < 1) {
+            std::cin.clear(); // Clear the error flag set by std::cin.fail()
+            std::cin.ignore(); // Ignore the invalid input
+            attempts++;
+            std::cout << "Invalid input. Please enter a positive integer." << std::endl;
+            std::cout << "Attempt " << attempts << " of " << max_attempts << "." << std::endl;
+        } else {
+            break;
+        }
+    }
+
+    if (attempts == max_attempts) {
+        std::cout << "Too many invalid attempts. Exiting program." << std::endl;
+        exit(EXIT_FAILURE); // Exit the program with a failure code
+    }
+
+    // Reset attempts for the next input
+    attempts = 0;
+
+    // Get time between keystrokes
+    while (attempts < max_attempts) {
+        std::cout << "Please enter time between keystrokes in ms (example `500`): ";
+        std::cin >> time_between_keystrokes;
+
+        if (std::cin.fail() || time_between_keystrokes < 1) {
+            std::cin.clear(); // Clear the error flag set by std::cin.fail()
+            std::cin.ignore(); // Ignore the invalid input
+            attempts++;
+            std::cout << "Invalid input. Please enter a positive integer." << std::endl;
+            std::cout << "Attempt " << attempts << " of " << max_attempts << "." << std::endl;
+        } else {
+            break;
+        }
+    }
+
+    if (attempts == max_attempts) {
+        std::cout << "Too many invalid attempts. Exiting program." << std::endl;
+        exit(EXIT_FAILURE); // Exit the program with a failure code
+    }
+}
+
 
 
 /*
